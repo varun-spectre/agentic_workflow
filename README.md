@@ -1,4 +1,4 @@
-## Work in progress
+# Work in progress
 
 
 Vision:
@@ -29,6 +29,16 @@ Agentic framework:
 6. Tool Registry
 
 
+
+# TODO: Future improvements
+
+Memory:
+- Implement token-limited memory
+- Add step filtering (e.g., only last plan+execution)
+- Add long-term memory storage options:
+  - File persistence
+  - Redis integration
+  - Vector DB support
 
 
 
