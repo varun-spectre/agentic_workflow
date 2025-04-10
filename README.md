@@ -1,3 +1,6 @@
+## Work in progress
+
+
 Vision:
 
 an Agent which does analysis on your portfolio and suggests changes to your portfolio.
@@ -10,11 +13,22 @@ an Agent which does analysis on your portfolio and suggests changes to your port
 
 Current tech stack in mind
 
-- LLM: OpenAI
+- LLM: OpenAI 4o
 - Database: ChromaDB, SQLite
 - Tools: DB access, Web search, Scraping, Twitter API
 - MCP: Whatsapp for agent to user communication
-- Agentic framework: LangChain
+
+Agentic framework:
+
+- Custom Agent framework
+1. Agent Config
+2. Memory (Context Tracker)
+3. System Prompt Builder
+4. Execution Backend
+5. Step Engine
+6. Tool Registry
+
+
 
 
 
