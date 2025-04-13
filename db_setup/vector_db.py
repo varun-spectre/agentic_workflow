@@ -1,28 +1,47 @@
-import chromadb
+import os
+import json
+from typing import List, Dict, Any
+from qdrant_client import QdrantClient
+from qdrant_client.models import VectorParams, Distance, PointStruct
 from sentence_transformers import SentenceTransformer
-from typing import List, Dict
+
+# Load Qdrant credentials from keys.json (assumes file is one level up from this script)
+key_path = os.path.join(os.path.dirname(__file__), '..', 'keys.json')
+with open(key_path, 'r') as f:
+    config = json.load(f)
+qdrant_cfg = config["qdrant"]
+
 
 class VectorDB:
     def __init__(self, collection_name: str = 'doc_embeddings', model_name: str = 'all-MiniLM-L6-v2'):
-        self.client = chromadb.Client()
-        self.collection = self.client.get_or_create_collection(collection_name)
+        self.client = QdrantClient(url=qdrant_cfg["url"], api_key=qdrant_cfg["api_key"])
+        self.collection_name = collection_name
         self.model = SentenceTransformer(model_name)
 
-    def add_documents(self, docs: List[str], ids: List[str]):
-        embeddings = self.model.encode(docs).tolist()
-        self.collection.add(documents=docs, embeddings=embeddings, ids=ids)
+        # Ensure collection exists
+        self.client.recreate_collection(
+            collection_name=self.collection_name,
+            vectors_config=VectorParams(size=self.model.get_sentence_embedding_dimension(), distance=Distance.COSINE)
+        )
 
-    def query(self, query_text: str, n_results: int = 2) -> Dict:
-        query_embedding = self.model.encode([query_text]).tolist()
-        return self.collection.query(query_embeddings=query_embedding, n_results=n_results)
+    def add_documents(self, docs: List[str], ids: List[str], metadata: List[Dict[str, Any]] = None):
+        vectors = self.model.encode(docs).tolist()
+        payloads = metadata if metadata else [{} for _ in docs]
+        points = [PointStruct(id=ids[i], vector=vectors[i], payload=payloads[i]) for i in range(len(docs))]
+        self.client.upsert(collection_name=self.collection_name, points=points)
 
-    def get_embeddings(self, ids: List[str]) -> List[List[float]]:
-        data = self.collection.get(ids=ids, include=['embeddings'])
-        return data['embeddings']
+    def query(self, query_text: str, n_results: int = 2) -> List[Dict]:
+        query_vector = self.model.encode([query_text])[0].tolist()
+        results = self.client.search(
+            collection_name=self.collection_name,
+            query_vector=query_vector,
+            limit=n_results
+        )
+        return [{"id": res.id, "score": res.score, "payload": res.payload} for res in results]
 
     def count_documents(self) -> int:
-        return self.collection.count()
+        return self.client.count(self.collection_name).count
 
     def get_all_ids(self) -> List[str]:
-        data = self.collection.get(include=[])
-        return data['ids']
+        points = self.client.scroll(self.collection_name, limit=10000, with_payload=False)
+        return [point.id for point in points[0]]
