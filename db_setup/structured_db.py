@@ -1,32 +1,74 @@
-import sqlite3
-from typing import List, Tuple
+import json
+import requests
+import os
+from typing import Dict, Any, List
+
+# Load credentials from config.json
+key_path = os.path.join(os.path.dirname(__file__), '..', 'keys.json')
+with open(key_path, 'r') as f:
+    config = json.load(f)
+pg_config = config["postgres"]
 
 class StructuredDB:
-    def __init__(self, db_path: str = 'local.db'):
-        self.conn = sqlite3.connect(db_path)
-        self.cursor = self.conn.cursor()
+    def __init__(self, table_name: str = None, schema: str = "public"):
+        self.supabase_url = pg_config["SUPABASE_URL"]
+        self.api_key = pg_config["SUPABASE_API_KEY"]
+        self.table_name = pg_config["SUPABASE_TABLE"]
+        self.schema = pg_config["SUPABASE_SCHEMA"]
 
-    def create_table(self, table_name: str, columns: str):
-        create_stmt = f"CREATE TABLE IF NOT EXISTS {table_name} ({columns});"
-        self.cursor.execute(create_stmt)
-        self.conn.commit()
+        self.headers = {
+            "apikey": self.api_key,
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+            "Prefer": "return=representation"
+        }
 
-    def insert_record(self, table_name: str, columns: List[str], values: List[Tuple]):
-        columns_str = ", ".join(columns)
-        placeholders = ", ".join(["?"] * len(columns))
-        insert_stmt = f"INSERT INTO {table_name} ({columns_str}) VALUES ({placeholders});"
-        self.cursor.executemany(insert_stmt, values)
-        self.conn.commit()
+    def read_rows(self, select: str = "*", filters: Dict[str, Any] = None) -> List[Dict]:
+        """
+        Read rows from the table with optional filters
+        Args:
+            select: Columns to select (default: "*")
+            filters: Dictionary of column filters (e.g., {"column": "value"})
+        """
+        url = f"{self.supabase_url}/rest/v1/{self.table_name}?select={select}"
+        
+        if filters:
+            filter_str = "&".join([f"{k}=eq.{v}" for k, v in filters.items()])
+            url += f"&{filter_str}"
+            
+        response = requests.get(url, headers=self.headers)
+        response.raise_for_status()
+        return response.json()
 
-    def fetch_all(self, table_name: str) -> List[Tuple]:
-        select_stmt = f"SELECT * FROM {table_name};"
-        self.cursor.execute(select_stmt)
-        return self.cursor.fetchall()
+    def update_row(self, row_id: int, update_data: Dict[str, Any]) -> Dict:
+        """
+        Update a row by ID
+        Args:
+            row_id: The ID of the row to update
+            update_data: Dictionary of column-value pairs to update
+        """
+        url = f"{self.supabase_url}/rest/v1/{self.table_name}?id=eq.{row_id}"
+        response = requests.patch(url, headers=self.headers, json=update_data)
+        response.raise_for_status()
+        return response.json()
 
-    def delete_all(self, table_name: str):
-        delete_stmt = f"DELETE FROM {table_name};"
-        self.cursor.execute(delete_stmt)
-        self.conn.commit()
+    def insert_row(self, data: Dict[str, Any]) -> Dict:
+        """
+        Insert a new row
+        Args:
+            data: Dictionary of column-value pairs to insert
+        """
+        url = f"{self.supabase_url}/rest/v1/{self.table_name}"
+        response = requests.post(url, headers=self.headers, json=data)
+        response.raise_for_status()
+        return response.json()
 
-    def close(self):
-        self.conn.close()
+    def delete_row(self, row_id: int) -> None:
+        """
+        Delete a row by ID
+        Args:
+            row_id: The ID of the row to delete
+        """
+        url = f"{self.supabase_url}/rest/v1/{self.table_name}?id=eq.{row_id}"
+        response = requests.delete(url, headers=self.headers)
+        response.raise_for_status()
