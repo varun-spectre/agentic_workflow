@@ -13,8 +13,8 @@ class StructuredDB:
     def __init__(self, table_name: str = None, schema: str = "public"):
         self.supabase_url = pg_config["SUPABASE_URL"]
         self.api_key = pg_config["SUPABASE_API_KEY"]
-        self.table_name = pg_config["SUPABASE_TABLE"]
-        self.schema = pg_config["SUPABASE_SCHEMA"]
+        self.table_name = table_name or pg_config["SUPABASE_TABLE"]
+        self.schema = schema or pg_config["SUPABASE_SCHEMA"]
 
         self.headers = {
             "apikey": self.api_key,
@@ -23,6 +23,18 @@ class StructuredDB:
             "Prefer": "return=representation"
         }
 
+    def create_table(self, sql_create_query: str) -> Dict:
+        """
+        Create a table by executing raw SQL via a stored procedure
+        Assumes you have a stored function `execute_sql(query text)`
+        """
+        url = f"{self.supabase_url}/rest/v1/rpc/execute_sql"
+        payload = {"query": sql_create_query}
+
+        response = requests.post(url, headers=self.headers, json=payload)
+        response.raise_for_status()
+        return response.json() if response.content else {"status": "success"}
+    
     def read_rows(self, select: str = "*", filters: Dict[str, Any] = None) -> List[Dict]:
         """
         Read rows from the table with optional filters
