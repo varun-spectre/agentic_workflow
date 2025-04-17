@@ -1,6 +1,5 @@
 import os
-import json
-import requests
+import sqlite3
 from typing import List, Dict, Optional
 from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, VectorParams
@@ -8,107 +7,75 @@ from sentence_transformers import SentenceTransformer
 
 
 class DataModel:
-    def __init__(self, structured_cfg, vector_cfg, schema="public"):
-        # Structured DB config (Supabase)
-        self.supabase_url = structured_cfg["SUPABASE_URL"]
-        self.api_key = structured_cfg["SUPABASE_API_KEY"]
-        self.schema = schema
-        self.headers = {
-            "apikey": self.api_key,
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
-        }
+    def __init__(self, sqlite_path: str, vector_cfg: dict):
+        # SQLite
+        self.conn = sqlite3.connect(sqlite_path)
+        self.conn.row_factory = sqlite3.Row
+        self.cursor = self.conn.cursor()
 
-        # Vector DB config (Qdrant)
+        # Qdrant
         self.qdrant_client = QdrantClient(url=vector_cfg["url"], api_key=vector_cfg["api_key"])
-        self.vector_model = SentenceTransformer('all-MiniLM-L6-v2')
+        self.vector_model = SentenceTransformer("all-MiniLM-L6-v2")
 
-        # Internal state
+        # Internal doc structure
         self.documentation = {"structured": {}, "unstructured": {}}
 
-    def fetch_tables(self, whitelist: Optional[List[str]] = None):
-        sql = """
-            SELECT table_name FROM information_schema.tables
-            WHERE table_schema = 'public'
-            AND table_name NOT LIKE '_%';
-        """
-
-        url = f"{self.supabase_url}/rest/v1/rpc/execute_sql"
-        response = requests.post(url, headers=self.headers, json={"query": sql})
-
-        if response.status_code != 200 or not response.content.strip():
-            print("⚠️ Failed to fetch table list or got empty result.")
-            return []
-
-        try:
-            result = response.json()
-            tables = [row["table_name"] for row in result]
-            if whitelist:
-                tables = [t for t in tables if t in whitelist]
-            return tables
-        except json.JSONDecodeError:
-            print("❌ JSON decoding failed. Response was:")
-            print(response.text)
-            return []
-
-
-
-
+    def fetch_tables(self, whitelist: Optional[List[str]] = None) -> List[str]:
+        self.cursor.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        )
+        print(self.cursor.fetchall())
+        tables = [row["name"] for row in self.cursor.fetchall()]
+        print(tables)
+        if whitelist:
+            tables = [t for t in tables if t in whitelist]
+        return tables
 
     def fetch_or_init_table_doc(self, table_name: str):
-        doc_table_name = f"_{table_name}"
-        url = f"{self.supabase_url}/rest/v1/{doc_table_name}?select=*"
+        doc_table = f"_{table_name}"
+        self.cursor.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+            (doc_table,)
+        )
+        exists = self.cursor.fetchone()
 
-        response = requests.get(url, headers=self.headers)
-
-        if response.status_code == 404:
-            print(f"⚠️ Documentation table '{doc_table_name}' not found. Creating...")
+        if not exists:
             self.create_doc_table(table_name)
             self.documentation["structured"][table_name] = {}
-            return
-
-        try:
-            response.raise_for_status()
-            doc_rows = response.json()
-            doc_data = {row['column_name']: row['description'] for row in doc_rows}
-            self.documentation["structured"][table_name] = doc_data
-        except requests.exceptions.HTTPError as e:
-            print(f"❌ Failed to fetch or create documentation table: {e}")
-            self.documentation["structured"][table_name] = {}
+        else:
+            self.cursor.execute(f"SELECT * FROM {doc_table}")
+            rows = self.cursor.fetchall()
+            self.documentation["structured"][table_name] = {
+                row["column_name"]: row["description"] for row in rows
+            }
 
     def create_doc_table(self, table_name: str):
-        doc_table_name = f"_{table_name}"
-        sql = f"""
-        CREATE TABLE IF NOT EXISTS {self.schema}."{doc_table_name}" (
-            column_name TEXT,
-            description TEXT
-        );
-        """
-        url = f"{self.supabase_url}/rest/v1/rpc/execute_sql"
-        response = requests.post(url, headers=self.headers, json={"query": sql})
-        response.raise_for_status()
-        print(f"✅ Created doc table {doc_table_name}")
-
+        doc_table = f"_{table_name}"
+        self.cursor.execute(f"""
+            CREATE TABLE IF NOT EXISTS {doc_table} (
+                column_name TEXT PRIMARY KEY,
+                description TEXT
+            );
+        """)
+        self.conn.commit()
+        print(f"✅ Created doc table '{doc_table}'")
 
     def update_table_doc(self, table_name: str, column_docs: Dict[str, str]):
-        doc_table_name = f"_{table_name}"
-        for column, description in column_docs.items():
-            url = f"{self.supabase_url}/rest/v1/{doc_table_name}"
-            payload = {"column_name": column, "description": description}
-            response = requests.post(url, headers=self.headers, json=payload)
-            response.raise_for_status()
-
+        doc_table = f"_{table_name}"
+        for column, desc in column_docs.items():
+            self.cursor.execute(f"""
+                INSERT INTO {doc_table} (column_name, description)
+                VALUES (?, ?)
+                ON CONFLICT(column_name) DO UPDATE SET description=excluded.description
+            """, (column, desc))
+        self.conn.commit()
         self.documentation["structured"][table_name] = column_docs
         print(f"✅ Updated documentation for '{table_name}'")
 
     def fetch_unstructured_collections(self, whitelist: Optional[List[str]] = None):
         collections = self.qdrant_client.get_collections().collections
-        collection_names = [col.name for col in collections]
-
-        if whitelist:
-            collection_names = [col for col in collection_names if col in whitelist]
-
-        return collection_names
+        names = [col.name for col in collections]
+        return [n for n in names if not whitelist or n in whitelist]
 
     def add_unstructured_doc(self, collection_name: str, description: str, update_db: bool = False):
         if update_db:
@@ -126,3 +93,6 @@ class DataModel:
 
     def get_documentation_dict(self):
         return self.documentation
+
+    def close(self):
+        self.conn.close()
